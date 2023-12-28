@@ -1,0 +1,1 @@
+go build -tags netgo -ldflags '-extldflags "-static"'

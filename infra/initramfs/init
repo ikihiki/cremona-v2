@@ -1,0 +1,12 @@
+#!/bin/ash
+mount -t proc proc /proc 
+mount -t sysfs sysfs /sys
+
+insmod cremona.ko
+
+echo "Cremona status:"
+cat /sys/kernel/cremona/status
+
+#/driver_test
+
+/bin/ash
