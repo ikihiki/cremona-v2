@@ -1,0 +1,6 @@
+{
+    "cmake.sourceDirectory": "/workspaces/cremona-v2",
+    "files.associations": {
+        "cdev.h": "c"
+    }
+}

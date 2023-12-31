@@ -1,13 +1,24 @@
 #include <linux/slab.h>
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
+#include <linux/cdev.h>
+#include <linux/fs.h>
+#include <linux/bits.h>
+#include <linux/bitfield.h>
 
 #include "cremona.h"
+
+#define DRIVER_NAME "Cremona-Mastdon"
+/* このデバイスドライバで使うマイナー番号の開始番号と個数(=デバイス数) */
+static const uint32_t MINOR_BASE = 0;
+static const uint32_t MINOR_NUM = 33; /* マイナー番号は 0 ~ 1 */
 
 struct cremona_t
 {
     struct kobject kobj;
     struct kset *repeaters;
+    dev_t dev;
+    struct class *device_class;
 };
 #define to_cremona_obj(x) container_of(x, struct cremona_t, kobj)
 
@@ -61,6 +72,15 @@ static void cremona_release(struct kobject *kobj)
     struct cremona_t *cremona;
 
     cremona = to_cremona_obj(kobj);
+
+    if (cremona->device_class != NULL)
+    {
+        class_destroy(cremona->device_class);
+    }
+    if (cremona->dev != 0)
+    {
+        unregister_chrdev_region(cremona->dev, MINOR_NUM);
+    }
     kfree(cremona);
 }
 
@@ -89,12 +109,29 @@ Cremona *cremona_create(void)
 {
     Cremona *instance;
     int ret;
+    struct class *device_class;
     instance = (Cremona *)kzalloc(sizeof(Cremona), GFP_KERNEL);
     ret = kobject_init_and_add(&instance->kobj, &cremona_ktype, kernel_kobj, "cremona");
     if (ret != 0)
     {
         goto instance_error;
     }
+
+    int alloc_ret =
+        alloc_chrdev_region(&instance->dev, MINOR_BASE, MINOR_NUM, DRIVER_NAME);
+    if (alloc_ret != 0)
+    {
+        pr_err("alloc_chrdev_region = %d\n", alloc_ret);
+        goto instance_error;
+    }
+
+    device_class = class_create("cremona");
+    if (IS_ERR(device_class))
+    {
+        pr_err("failed create device class \n");
+        goto instance_error;
+    }
+    instance->device_class = device_class;
 
     instance->repeaters = kset_create_and_add("repeaters", NULL, &instance->kobj);
     if (!instance->repeaters)
@@ -111,19 +148,18 @@ instance_error:
     return NULL;
 }
 
-Cremona *cremona_get(Cremona *cremona){
+Cremona *cremona_get(Cremona *cremona)
+{
     kobject_get(&cremona->kobj);
     return cremona;
 }
-
-
 
 void cremona_put(Cremona *cremona)
 {
     kobject_put(&cremona->kobj);
 }
 
-Repeater* cremona_add_repertor(Cremona *cremona, const int pid, const char* name)
+Repeater *cremona_add_repertor(Cremona *cremona, const int pid, const char *name)
 {
     char buf[12];
     struct kobject *repertorKobject;
@@ -135,7 +171,28 @@ Repeater* cremona_add_repertor(Cremona *cremona, const int pid, const char* name
         return NULL;
     }
 
-    Repeater *repertor = repeater_create_and_add(cremona->repeaters, pid, name);
+    struct kobject *k;
+    int dev_minor;
+    Repeater *repeater;
+    unsigned long long mask = 0;
+    spin_lock(&cremona->repeaters->list_lock);
+    list_for_each_entry(k, &cremona->repeaters->list, entry)
+    {
+        repeater = kobj2repeater(k);
+        mask = mask | (1 << get_dev_minor(repeater));
+    }
+    spin_unlock(&cremona->repeaters->list_lock);
+
+    for (int i = 0; i < 64; i++)
+    {
+        if ((mask & (1 << i)) == 0)
+        {
+            dev_minor = i;
+            break;
+        }
+    }
+
+    Repeater *repertor = repeater_create_and_add(cremona->repeaters, pid, name, MKDEV(MAJOR(cremona->dev), dev_minor), cremona->device_class);
 
     return repertor;
 }

@@ -1,12 +1,18 @@
 #!/bin/ash
+mount -t tmpfs -o size=64k,mode=0755 tmpfs /dev
+mkdir /dev/pts
+mount -t devpts devpts /dev/pts
 mount -t proc proc /proc 
 mount -t sysfs sysfs /sys
+echo /sbin/mdev > /proc/sys/kernel/hotplug
+touch /dev/mdev.log 
+mdev -s -d
 
 insmod cremona.ko
 
 echo "Cremona status:"
 cat /sys/kernel/cremona/status
 
-#/driver_test
+/driver_test
 
 /bin/ash

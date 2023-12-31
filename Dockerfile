@@ -11,30 +11,31 @@ COPY driver/src/ /build/cremona/src
 COPY driver/Makefile /build/cremona/
 RUN cd /build/cremona && make  all
 
-FROM ubuntu as busybox
+FROM ubuntu AS busybox
 RUN apt-get update && apt install -y build-essential bc bison flex libelf-dev libssl-dev libncurses5-dev git
 RUN mkdir /build && cd /build && git clone --depth 1 --branch 1_36_1  git://git.busybox.net/busybox
 RUN mkdir /initramfs
 COPY infra/initramfs/.config /build/busybox/
 RUN cd /build/busybox && make -j10 && make CONFIG_PREFIX=/initramfs install
 
-FROM golang as driver_test
+FROM golang AS driver_test
 RUN mkdir /build
 COPY driver_test/ /build
-RUN cd /build && ./build.sh
+RUN cd /build && make build
 
-FROM ubuntu as initramfs
+FROM ubuntu AS initramfs
 RUN  apt-get update && apt install -y cpio
 RUN mkdir /initramfs
 COPY --from=busybox /initramfs/ /initramfs
 RUN mkdir /initramfs/etc && mkdir /initramfs/proc && mkdir /initramfs/dev && mkdir /initramfs/sys
 COPY infra/initramfs/fstab /initramfs/etc/
+COPY infra/initramfs/mdev.conf /initramfs/etc/
 COPY infra/initramfs/init /initramfs/
 COPY --from=cremona /build/cremona/build/cremona.ko /initramfs/
 COPY --from=driver_test /build/driver_test /initramfs/
 RUN ( cd /initramfs ; find . -print0 | cpio -o -a0v -H newc ) | gzip > /initramfs.gz
 
-FROM ubuntu as qemu
+FROM ubuntu AS qemu
 RUN apt-get update && apt install -y qemu-system-x86
 RUN apt install -y tmux gdb
 RUN mkdir /dest /build /build/cremona /build/linux
@@ -45,3 +46,10 @@ COPY --from=cremona /build/cremona/ /build/cremona/
 COPY --from=kernel /build/linux/arch/x86/boot/bzImage /dest
 COPY --from=initramfs /initramfs.gz /dest
 
+
+FROM kernel AS devcontainer
+RUN apt-get update && apt install -y qemu-system-x86
+RUN apt install -y tmux gdb cpio
+COPY --from=initramfs /initramfs /initramfs
+RUN mkdir -p /dest /root/.config/gdb/
+RUN echo "set auto-load safe-path /build" > /root/.config/gdb/gdbinit
