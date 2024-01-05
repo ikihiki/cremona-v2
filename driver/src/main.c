@@ -8,11 +8,16 @@ Repeater *repeater;
 
 
 MODULE_LICENSE("Dual BSD/GPL");
+
+void repeater_callback(Repeater * repeater){
+    netlink_send_add_data_message(repeater);
+}
+
 static int hello_init(void)
 {
     int rc;
     printk(KERN_ALERT "Hello, world\n");
-    instance = cremona_create();
+    instance = cremona_create(&repeater_callback);
     if(!instance)
     {
         printk(KERN_ALERT "cremona_create failed\n");

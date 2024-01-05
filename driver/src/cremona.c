@@ -19,6 +19,7 @@ struct cremona_t
     struct kset *repeaters;
     dev_t dev;
     struct class *device_class;
+    repeater_add_data_callback callback;
 };
 #define to_cremona_obj(x) container_of(x, struct cremona_t, kobj)
 
@@ -105,7 +106,7 @@ static const struct kobj_type cremona_ktype = {
     .default_groups = cremona_default_groups,
 };
 
-Cremona *cremona_create(void)
+Cremona *cremona_create(repeater_add_data_callback callback)
 {
     Cremona *instance;
     int ret;
@@ -138,6 +139,7 @@ Cremona *cremona_create(void)
     {
         goto repeaters_error;
     }
+    instance->callback = callback;
 
     kobject_uevent(&instance->kobj, KOBJ_ADD);
     return instance;
@@ -157,6 +159,18 @@ Cremona *cremona_get(Cremona *cremona)
 void cremona_put(Cremona *cremona)
 {
     kobject_put(&cremona->kobj);
+}
+
+static Repeater* get_repeater_by_pid(Cremona *cremona, const int pid){
+    char buf[12];
+    snprintf(buf, 12, "%d", pid);
+    struct kobject *repertorKobject;
+    repertorKobject = kset_find_obj(cremona->repeaters, buf);
+    if (repertorKobject == NULL)
+    {
+        return NULL;
+    }
+    return kobj2repeater(repertorKobject);
 }
 
 Repeater *cremona_add_repertor(Cremona *cremona, const int pid, const char *name)
@@ -192,7 +206,33 @@ Repeater *cremona_add_repertor(Cremona *cremona, const int pid, const char *name
         }
     }
 
-    Repeater *repertor = repeater_create_and_add(cremona->repeaters, pid, name, MKDEV(MAJOR(cremona->dev), dev_minor), cremona->device_class);
+    Repeater *repertor = repeater_create_and_add(cremona->repeaters, pid, name, MKDEV(MAJOR(cremona->dev), dev_minor), cremona->device_class, cremona->callback);
 
     return repertor;
+}
+
+int cremona_read_buffer(Cremona *cremona, const int pid, buffer_reader reader, void *data){
+    Repeater *repeater = get_repeater_by_pid(cremona, pid);
+    if(repeater == NULL){
+        return -ENOENT;
+    }
+    return repeater_read_data(repeater, reader, data);
+}
+int cremona_move_next_buffer(Cremona *cremona, const int pid){
+    Repeater *repeater = get_repeater_by_pid(cremona, pid);
+    if(repeater == NULL){
+        return -ENOENT;
+    }
+    return repeater_pop_data(repeater);
+}
+
+int cremona_remove_repertor(Cremona *cremona, const int pid){
+    Repeater *repeater = get_repeater_by_pid(cremona, pid);
+    if (repeater == NULL)
+    {
+        return -ENOENT;
+    }
+
+    repeater_put(repeater);
+    return 0;
 }

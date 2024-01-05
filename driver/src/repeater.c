@@ -12,17 +12,14 @@ struct repeater_t
     struct kobject kobj;
     int pid;
     char name[CREMONA_MAX_DEVICE_NAME_LEN + 1];
-    CicularBufferItem cicular_buffer[CIRCULAR_BUFFER_LEN];
-    int buffer_head;
-    int buffer_tail;
-    spinlock_t producer_lock;
-    spinlock_t consumer_lock;
+    CommandBuffer *command_buffer;
     dev_t dev;
     struct cdev cdev;
     spinlock_t toot_count_lock;
     int toot_count;
     bool cdev_added;
     struct device *device;
+    repeater_add_data_callback callback;
 };
 
 struct inode_data
@@ -110,7 +107,7 @@ char *repeater_get_name(Repeater *repeater)
     return repeater->name;
 }
 
-Repeater *repeater_create_and_add(struct kset *parent, const int pid, const char *name, dev_t dev, struct class *device_class)
+Repeater *repeater_create_and_add(struct kset *parent, const int pid, const char *name, dev_t dev, struct class *device_class, repeater_add_data_callback callback)
 {
     Repeater *repeater;
     int retval;
@@ -126,6 +123,7 @@ Repeater *repeater_create_and_add(struct kset *parent, const int pid, const char
     repeater->kobj.kset = parent;
     repeater->pid = pid;
     repeater->dev = dev;
+    repeater->callback = callback;
     strncpy(repeater->name, name, CREMONA_MAX_DEVICE_NAME_LEN);
     spin_lock_init(&repeater->producer_lock);
     spin_lock_init(&repeater->consumer_lock);
@@ -198,6 +196,10 @@ void repeater_add_data(Repeater *repeater, CREMONA_REPERTER_DATA_TYPE type, int 
     }
 
     spin_unlock(&repeater->producer_lock);
+    if (type == CREMONA_REPERTER_DATA_TYPE_TOOT_SEND)
+    {
+        repeater->callback(repeater);
+    }
 }
 
 static ssize_t repeater_add_data_user(Repeater *repeater, CREMONA_REPERTER_DATA_TYPE type, int id, const char __user *buf, size_t count)
@@ -236,11 +238,15 @@ static ssize_t repeater_add_data_user(Repeater *repeater, CREMONA_REPERTER_DATA_
     }
 
     spin_unlock(&repeater->producer_lock);
+    // if (rc >= 0 )
+    // {
+    //     repeater->callback(repeater);
+    // }
 
     return rc;
 }
 
-int repeater_read_data(Repeater *repeater, int (*reader)(CicularBufferItem *item, void *data), void *data)
+int repeater_read_data(Repeater *repeater, buffer_reader reader, void *data)
 {
     int rc;
 
