@@ -1,16 +1,12 @@
-#include <spinlock.h>
+#include <linux/spinlock.h>
+#include <linux/circ_buf.h>
+#include <linux/fs.h>
 
 #include "cremona.h"
 
-typedef enum
-{
-    CREMONA_COMMAND_TYPE_CREATE_TOOT,
-    CREMONA_COMMAND_TYPE_TOOT_ADD_STRING,
-    CREMONA_COMMAND_TYPE_SEND_TOOT
-} CREMONA_COMMAND_TYPE;
-
 typedef struct command_t
 {
+    unsigned long time;
     CREMONA_COMMAND_TYPE type;
     int id;
     char data[CIRCULAR_BUFFER_DATA_LEN];
@@ -35,7 +31,7 @@ CommandBuffer *create_command_buffer()
         goto alloc_err;
     }
 
-    command_buffer->cicular_buffer = (Command *)((void*)command_buffer + sizeof(*command_buffer));
+    command_buffer->cicular_buffer = (Command *)((void *)command_buffer + sizeof(*command_buffer));
     spin_lock_init(&command_buffer->producer_lock);
     spin_lock_init(&command_buffer->consumer_lock);
 
@@ -43,6 +39,11 @@ CommandBuffer *create_command_buffer()
 
 alloc_err:
     return NULL;
+}
+
+void destroy_command_buffer(CommandBuffer *command_buffer)
+{
+    kfree(command_buffer);
 }
 
 static void command_buffer_add_data(CommandBuffer *command_buffer, CREMONA_COMMAND_TYPE type, int id, const char *data, int data_len)
@@ -55,6 +56,7 @@ static void command_buffer_add_data(CommandBuffer *command_buffer, CREMONA_COMMA
     if (CIRC_SPACE(head, tail, CIRCULAR_BUFFER_LEN) >= 1)
     {
         Command *item = &command_buffer->cicular_buffer[head];
+        item->time = jiffies;
         item->type = type;
         item->id = id;
         if (data != NULL)
@@ -73,12 +75,13 @@ static ssize_t command_buffer_add_data_user(CommandBuffer *command_buffer, CREMO
     spin_lock(&command_buffer->producer_lock);
     int head = command_buffer->buffer_head;
     int tail = READ_ONCE(command_buffer->buffer_tail);
-    int len = min(count, CIRCULAR_BUFFER_DATA_LEN);
+    int len = min(count, (size_t)CIRCULAR_BUFFER_DATA_LEN);
     int rc;
 
     if (CIRC_SPACE(head, tail, CIRCULAR_BUFFER_LEN) >= 1)
     {
-        CicularBufferItem *item = &command_buffer->cicular_buffer[head];
+        Command *item = &command_buffer->cicular_buffer[head];
+        item->time = jiffies;
         item->type = type;
         item->id = id;
         if (buf != NULL)
@@ -107,26 +110,25 @@ static ssize_t command_buffer_add_data_user(CommandBuffer *command_buffer, CREMO
     return rc;
 }
 
-int command_buffer_read_data(CommandBuffer *command_buffer, buffer_reader reader, void *data)
+int command_buffer_read_data(CommandBuffer *command_buffer, buffer_reader reader, void *context)
 {
-    int rc;
-
+    int rc = 0;
     spin_lock(&command_buffer->consumer_lock);
     int head = smp_load_acquire(&command_buffer->buffer_head);
     int tail = command_buffer->buffer_tail;
     if (CIRC_CNT(head, tail, CIRCULAR_BUFFER_LEN) >= 1)
     {
-        CicularBufferItem *item = &command_buffer->cicular_buffer[tail];
-        rc = reader(item, data);
+        Command *item = &command_buffer->cicular_buffer[tail];
+        rc = reader(item->type, item->id, item->data, item->data_len, context);
     }
 
     spin_unlock(&command_buffer->consumer_lock);
-
     return rc;
 }
 
 int command_buffer_pop_data(CommandBuffer *command_buffer)
 {
+    int rc;
     spin_lock(&command_buffer->consumer_lock);
     int head = smp_load_acquire(&command_buffer->buffer_head);
     int tail = command_buffer->buffer_tail;
@@ -138,13 +140,12 @@ int command_buffer_pop_data(CommandBuffer *command_buffer)
 
     spin_unlock(&command_buffer->consumer_lock);
 
-    head = smp_load_acquire(&command_buffer->buffer_head);
-    tail = command_buffer->buffer_tail;
-
-    return CIRC_CNT(head, tail, CIRCULAR_BUFFER_LEN);
+    rc = command_buffer_get_count(command_buffer);
+    return rc;
 }
 
-void command_buffer_create_toot(CommandBuffer *command_buffer, int id){
+void command_buffer_create_toot(CommandBuffer *command_buffer, int id)
+{
     command_buffer_add_data(command_buffer, CREMONA_COMMAND_TYPE_CREATE_TOOT, id, NULL, 0);
 }
 
@@ -156,4 +157,42 @@ void command_buffer_send_toot(CommandBuffer *command_buffer, int id)
 ssize_t command_buffer_add_str_from_usr(CommandBuffer *command_buffer, int id, const char __user *buf, size_t count)
 {
     return command_buffer_add_data_user(command_buffer, CREMONA_COMMAND_TYPE_TOOT_ADD_STRING, id, buf, count);
+}
+
+int command_buffer_get_count(CommandBuffer *command_buffer)
+{
+    int head = smp_load_acquire(&command_buffer->buffer_head);
+    int tail = command_buffer->buffer_tail;
+
+    return CIRC_CNT(head, tail, CIRCULAR_BUFFER_LEN);
+}
+
+int command_buffer_add_keep_alive(CommandBuffer *command_buffer)
+{
+    bool isEmpty = false;
+    bool isHang = false;
+
+    spin_lock(&command_buffer->consumer_lock);
+    int head = smp_load_acquire(&command_buffer->buffer_head);
+    int tail = command_buffer->buffer_tail;
+    if (CIRC_CNT(head, tail, CIRCULAR_BUFFER_LEN) >= 1)
+    {
+        Command *item = &command_buffer->cicular_buffer[tail];
+        if (item->time + 10000 < jiffies)
+        {
+            isHang = true;
+        }
+    }
+    else
+    {
+        isEmpty = true;
+    }
+
+    spin_unlock(&command_buffer->consumer_lock);
+
+    if (isEmpty)
+    {
+        command_buffer_add_data(command_buffer, CREMONA_COMMAND_TYPE_KEEP_ALIVE, 0, NULL, 0);
+    }
+    return isHang ? -1 : isEmpty ? 1 : 0;
 }

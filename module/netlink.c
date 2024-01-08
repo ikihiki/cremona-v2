@@ -92,7 +92,7 @@ int netlink_init(Cremona *cremona)
     return 0;
 
 familly_error:
-    printk("error occurred while registering GENL_EXMPL family!\n");
+    crmna_pr_info("error occurred while registering Cremona family!\n");
     return ret;
 }
 
@@ -122,11 +122,14 @@ static int cremona_connect(struct sk_buff *skb, struct genl_info *info)
     if (!reply)
     {
         rc = -ENOMEM;
+        crmna_pr_info("error %s with faild new genlmsg", __FUNCTION__);
         goto out_putrepeater;
     }
-    reply_head = genlmsg_put_reply(reply, info, &cremona_genl_family, 0, CREMONA_CMD_CONNECT);
+    reply_head = genlmsg_put_reply(reply, info, &cremona_genl_family, 0, info->genlhdr->cmd);
+
     if (!reply_head)
     {
+        crmna_pr_info("error %s with faild put head", __FUNCTION__);
         goto out_free;
     }
 
@@ -134,7 +137,10 @@ static int cremona_connect(struct sk_buff *skb, struct genl_info *info)
     genlmsg_end(reply, reply_head);
 
     if (rc < 0)
+    {
+        crmna_pr_info("error %s with faild put CREMONA_ATTR_RESULT", __FUNCTION__);
         goto out_free;
+    }
 
     return genlmsg_reply(reply, info);
 
@@ -151,17 +157,17 @@ void netlink_send_add_data_message(Repeater *repeater)
     void *msg_head;
     int rc = -ENOBUFS;
 
-    printk(KERN_INFO "cremona: start %s", __FUNCTION__);
-
     skb = genlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
     if (!skb)
     {
         rc = -ENOMEM;
-        goto out_putrepeater;
+        crmna_pr_info("error %s with faild new genlmsg", __FUNCTION__);
+        goto err_new;
     }
-    msg_head = genlmsg_put(skb, 0, 0, &cremona_genl_family, 0, CREMONA_CMD_READ_BUFFER);
+    msg_head = genlmsg_put(skb, 0, 0, &cremona_genl_family, 0, CREMONA_CMD_NOTIFY_ADD_DATA);
     if (!msg_head)
     {
+        crmna_pr_info("error %s with faild put head", __FUNCTION__);
         goto out_free;
     }
 
@@ -169,35 +175,45 @@ void netlink_send_add_data_message(Repeater *repeater)
     genlmsg_end(skb, msg_head);
 
     if (rc < 0)
+    {
+        crmna_pr_info("error %s with faild put CREMONA_ATTR_RESULT", __FUNCTION__);
         goto out_free;
+    }
 
     genlmsg_unicast(&init_net, skb, repeater_get_pid(repeater));
-    printk(KERN_INFO "cremona: exit %s", __FUNCTION__);
     return;
 
 out_free:
     nlmsg_free(skb);
-out_putrepeater:
-    printk(KERN_INFO "cremona: exit %s", __FUNCTION__);
+err_new:
     return;
 }
 
-static int reader(CicularBufferItem *item, void *data)
+static int reader(CREMONA_COMMAND_TYPE type, int id, const char *data, int data_len, void *context)
 {
-    printk(KERN_INFO "cremona: start %s", __FUNCTION__);
     int rc = -ENOBUFS;
-    struct sk_buff *reply = (struct sk_buff *)data;
+    struct sk_buff *reply = (struct sk_buff *)context;
 
-    rc = nla_put_u8(reply, CREMONA_ATTR_CMD, item->type);
+    rc = nla_put_u8(reply, CREMONA_ATTR_CMD, type);
     if (rc < 0)
+    {
+        crmna_pr_info("error %s with faild put CREMONA_ATTR_CMD rc: %d", __FUNCTION__, rc);
         return rc;
+    }
 
-    rc = nla_put_u32(reply, CREMONA_ATTR_TOOT_ID, item->id);
+    rc = nla_put_u32(reply, CREMONA_ATTR_TOOT_ID, id);
     if (rc < 0)
+    {
+        crmna_pr_info("error %s with faild put CREMONA_ATTR_TOOT_ID rc: %d", __FUNCTION__, rc);
         return rc;
+    }
 
-    rc = nla_put(reply, CREMONA_ATTR_DATA, item->data_len, item->data);
-    printk(KERN_INFO "cremona: exit %s", __FUNCTION__);
+    rc = nla_put(reply, CREMONA_ATTR_DATA, data_len, data);
+       if (rc < 0)
+    {
+        crmna_pr_info("error %s with faild put CREMONA_ATTR_DATA rc: %d", __FUNCTION__, rc);
+        return rc;
+    }
     return rc;
 }
 
@@ -211,24 +227,29 @@ static int netlink_cremona_read_buffer(struct sk_buff *skb, struct genl_info *in
     if (!reply)
     {
         rc = -ENOMEM;
-        goto out_putrepeater;
+        crmna_pr_info("error %s with faild new genlmsg", __FUNCTION__);
+        return rc;
     }
-    reply_head = genlmsg_put_reply(reply, info, &cremona_genl_family, 0, CREMONA_CMD_CONNECT);
+    reply_head = genlmsg_put_reply(reply, info, &cremona_genl_family, 0, info->genlhdr->cmd);
+
     if (!reply_head)
     {
+        crmna_pr_info("error %s with faild put head", __FUNCTION__);
         goto out_free;
     }
     rc = cremona_read_buffer(cremona_instance, info->snd_portid, reader, reply);
     genlmsg_end(reply, reply_head);
 
     if (rc < 0)
+    {
+        crmna_pr_info("error %s with faild call reader", __FUNCTION__);
         goto out_free;
+    }
 
     return genlmsg_reply(reply, info);
 
 out_free:
     nlmsg_free(reply);
-out_putrepeater:
     return rc;
 }
 
@@ -242,11 +263,14 @@ static int netlink_cremona_move_next_buffer(struct sk_buff *skb, struct genl_inf
     if (!reply)
     {
         rc = -ENOMEM;
-        goto out_putrepeater;
+        crmna_pr_info("error %s with faild new genlmsg", __FUNCTION__);
+        return rc;
     }
-    reply_head = genlmsg_put_reply(reply, info, &cremona_genl_family, 0, CREMONA_CMD_MOVE_NEXT);
+    reply_head = genlmsg_put_reply(reply, info, &cremona_genl_family, 0, info->genlhdr->cmd);
+
     if (!reply_head)
     {
+        crmna_pr_info("error %s with faild put head", __FUNCTION__);
         goto out_free;
     }
 
@@ -254,17 +278,20 @@ static int netlink_cremona_move_next_buffer(struct sk_buff *skb, struct genl_inf
     genlmsg_end(reply, reply_head);
 
     if (rc < 0)
+    {
+        crmna_pr_info("error %s with faild put CREMONA_ATTR_RESULT", __FUNCTION__);
         goto out_free;
+    }
 
     return genlmsg_reply(reply, info);
 
 out_free:
     nlmsg_free(reply);
-out_putrepeater:
     return rc;
 }
 
-static int netlink_cremona_disconnect(struct sk_buff *skb, struct genl_info *info){
+static int netlink_cremona_disconnect(struct sk_buff *skb, struct genl_info *info)
+{
     struct sk_buff *reply;
     void *reply_head;
     int rc = -ENOBUFS;
@@ -274,11 +301,13 @@ static int netlink_cremona_disconnect(struct sk_buff *skb, struct genl_info *inf
     if (!reply)
     {
         rc = -ENOMEM;
-        goto out_putrepeater;
+        crmna_pr_info("error %s with faild new genlmsg", __FUNCTION__);
+        return rc;
     }
-    reply_head = genlmsg_put_reply(reply, info, &cremona_genl_family, 0, CREMONA_CMD_MOVE_NEXT);
+    reply_head = genlmsg_put_reply(reply, info, &cremona_genl_family, 0, info->genlhdr->cmd);
     if (!reply_head)
     {
+        crmna_pr_info("error %s with faild put head", __FUNCTION__);
         goto out_free;
     }
 
@@ -288,12 +317,14 @@ static int netlink_cremona_disconnect(struct sk_buff *skb, struct genl_info *inf
     genlmsg_end(reply, reply_head);
 
     if (rc < 0)
+    {
+        crmna_pr_info("error %s with faild put CREMONA_ATTR_RESULT", __FUNCTION__);
         goto out_free;
+    }
 
     return genlmsg_reply(reply, info);
 
 out_free:
     nlmsg_free(reply);
-out_putrepeater:
     return rc;
 }

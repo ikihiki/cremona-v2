@@ -13,9 +13,10 @@ insmod cremona.ko
 echo "Cremona status:"
 cat /sys/kernel/cremona/status
 
-/driver_test  &
+/driver_test
 
 sleep 1
-echo "Cremona status:" > /dev/driver_test
+
+#/cremona_daemon &
 
 /bin/ash

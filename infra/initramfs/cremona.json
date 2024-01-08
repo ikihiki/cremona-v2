@@ -1,0 +1,8 @@
+{
+    "Server": "mastdon server url",
+    "ClientId": "api client id",
+    "ClientSecret": "api client secret",
+    "Username": "username",
+    "Password": "password",
+    "DeviceName": "cremona"
+}

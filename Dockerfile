@@ -6,10 +6,9 @@ RUN cd /build/linux && make -j10
 RUN cd /build/linux && make scripts_gdb
 
 FROM kernel as cremona
-RUN mkdir /build/cremona && mkdir /build/cremona/build && mkdir /build/cremona/src && mkdir /out
-COPY driver/src/ /build/cremona/src
-COPY driver/Makefile /build/cremona/
-RUN cd /build/cremona && make  all
+RUN mkdir /build/cremona
+COPY module/ /build/cremona
+RUN cd /build/cremona && make
 
 FROM ubuntu AS busybox
 RUN apt-get update && apt install -y build-essential bc bison flex libelf-dev libssl-dev libncurses5-dev git
@@ -18,9 +17,9 @@ RUN mkdir /initramfs
 COPY infra/initramfs/.config /build/busybox/
 RUN cd /build/busybox && make -j10 && make CONFIG_PREFIX=/initramfs install
 
-FROM golang AS driver_test
+FROM golang AS userland
 RUN mkdir /build
-COPY driver_test/ /build
+COPY userland/ /build
 RUN cd /build && make build
 
 FROM ubuntu AS initramfs
@@ -31,8 +30,12 @@ RUN mkdir /initramfs/etc && mkdir /initramfs/proc && mkdir /initramfs/dev && mkd
 COPY infra/initramfs/fstab /initramfs/etc/
 COPY infra/initramfs/mdev.conf /initramfs/etc/
 COPY infra/initramfs/init /initramfs/
-COPY --from=cremona /build/cremona/build/cremona.ko /initramfs/
-COPY --from=driver_test /build/driver_test /initramfs/
+COPY infra/initramfs/cremona.json /initramfs/
+
+FROM initramfs AS build_initramfs
+COPY --from=cremona  /build/cremona/cremona.ko /initramfs/
+COPY --from=userland /build/userland/cmd/cremona_daemon/cremona_daemon /initramfs/
+COPY --from=userland /build/userland/cmd/driver_test /initramfs/
 RUN ( cd /initramfs ; find . -print0 | cpio -o -a0v -H newc ) | gzip > /initramfs.gz
 
 FROM ubuntu AS qemu

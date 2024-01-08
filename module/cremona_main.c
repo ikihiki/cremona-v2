@@ -5,6 +5,7 @@
 #include <linux/fs.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
+#include <linux/timer.h>
 
 #include "cremona.h"
 
@@ -20,6 +21,7 @@ struct cremona_t
     dev_t dev;
     struct class *device_class;
     repeater_add_data_callback callback;
+    struct timer_list timer;
 };
 #define to_cremona_obj(x) container_of(x, struct cremona_t, kobj)
 
@@ -82,6 +84,11 @@ static void cremona_release(struct kobject *kobj)
     {
         unregister_chrdev_region(cremona->dev, MINOR_NUM);
     }
+
+    if (cremona->timer.entry.pprev != NULL)
+    {
+        del_timer(&cremona->timer);
+    }
     kfree(cremona);
 }
 
@@ -105,6 +112,40 @@ static const struct kobj_type cremona_ktype = {
     .release = cremona_release,
     .default_groups = cremona_default_groups,
 };
+
+static void timer_func(struct timer_list *t)
+{
+    struct kobject *k;
+    Repeater *repeater;
+    int rc;
+    Repeater* put_repeaters[100];
+    int count = 0;
+
+    Cremona *cremona = from_timer(cremona, t, timer);
+    spin_lock(&cremona->repeaters->list_lock);
+    list_for_each_entry(k, &cremona->repeaters->list, entry)
+    {
+        repeater = kobj2repeater(k);
+        rc = repeater_add_keep_alive(repeater);
+        if(rc == -1)
+        {
+            put_repeaters[count] = repeater;
+            count++;
+        }
+        if(count == 100)
+        {
+            break;
+        }
+    }
+    spin_unlock(&cremona->repeaters->list_lock);
+
+    for(int i = 0; i < count; i++)
+    {
+        repeater_put(put_repeaters[i]);
+    }
+
+    mod_timer(&cremona->timer, jiffies + 1000);
+}
 
 Cremona *cremona_create(repeater_add_data_callback callback)
 {
@@ -141,7 +182,12 @@ Cremona *cremona_create(repeater_add_data_callback callback)
     }
     instance->callback = callback;
 
+    timer_setup(&instance->timer, timer_func, 0);
+    instance->timer.expires = jiffies + 1000;
+    add_timer(&instance->timer);
+
     kobject_uevent(&instance->kobj, KOBJ_ADD);
+
     return instance;
 
 repeaters_error:
@@ -161,7 +207,8 @@ void cremona_put(Cremona *cremona)
     kobject_put(&cremona->kobj);
 }
 
-static Repeater* get_repeater_by_pid(Cremona *cremona, const int pid){
+static Repeater *get_repeater_by_pid(Cremona *cremona, const int pid)
+{
     char buf[12];
     snprintf(buf, 12, "%d", pid);
     struct kobject *repertorKobject;
@@ -182,6 +229,7 @@ Repeater *cremona_add_repertor(Cremona *cremona, const int pid, const char *name
     repertorKobject = kset_find_obj(cremona->repeaters, buf);
     if (repertorKobject != NULL)
     {
+        repeater_put(kobj2repeater(repertorKobject));
         return NULL;
     }
 
@@ -211,28 +259,40 @@ Repeater *cremona_add_repertor(Cremona *cremona, const int pid, const char *name
     return repertor;
 }
 
-int cremona_read_buffer(Cremona *cremona, const int pid, buffer_reader reader, void *data){
+int cremona_read_buffer(Cremona *cremona, const int pid, buffer_reader reader, void *data)
+{
     Repeater *repeater = get_repeater_by_pid(cremona, pid);
-    if(repeater == NULL){
+    int rc;
+    if (repeater == NULL)
+    {
         return -ENOENT;
     }
-    return repeater_read_data(repeater, reader, data);
+    rc = repeater_read_data(repeater, reader, data);
+    repeater_put(repeater);
+    return rc;
 }
-int cremona_move_next_buffer(Cremona *cremona, const int pid){
+int cremona_move_next_buffer(Cremona *cremona, const int pid)
+{
     Repeater *repeater = get_repeater_by_pid(cremona, pid);
-    if(repeater == NULL){
+    int rc;
+    if (repeater == NULL)
+    {
         return -ENOENT;
     }
-    return repeater_pop_data(repeater);
+    rc = repeater_pop_data(repeater);
+    repeater_put(repeater);
+    return rc;
 }
 
-int cremona_remove_repertor(Cremona *cremona, const int pid){
+int cremona_remove_repertor(Cremona *cremona, const int pid)
+{
     Repeater *repeater = get_repeater_by_pid(cremona, pid);
     if (repeater == NULL)
     {
         return -ENOENT;
     }
 
+    repeater_put(repeater);
     repeater_put(repeater);
     return 0;
 }

@@ -4,7 +4,6 @@
 #include "cremona.h"
 
 Cremona *instance;
-Repeater *repeater;
 
 
 MODULE_LICENSE("Dual BSD/GPL");
@@ -24,19 +23,10 @@ static int hello_init(void)
         return -EINVAL;
     }
 
-    repeater  = cremona_add_repertor(instance, 1, "test");
-    if(!repeater)
-    {
-        printk(KERN_ALERT "cremona_add_repertor failed\n");
-        cremona_put(instance);
-        return -EINVAL;
-    }
-
     rc = netlink_init(instance);
     if(rc != 0)
     {
         printk(KERN_ALERT "netlink_init failed\n");
-        repeater_put(repeater);
         cremona_put(instance);
         return -EINVAL;
     }
@@ -46,9 +36,11 @@ static int hello_init(void)
 static void hello_exit(void)
 {
     netlink_destroy();
-    repeater_put(repeater);
     cremona_put(instance);
     printk(KERN_ALERT "Goodbye, cruel world\n");
 }
 module_init(hello_init);
 module_exit(hello_exit);
+
+
+

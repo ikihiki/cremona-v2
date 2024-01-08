@@ -1,7 +1,6 @@
 #include <linux/kobject.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/circ_buf.h>
 #include <linux/cdev.h>
 #include <linux/fs.h>
 
@@ -25,7 +24,7 @@ struct repeater_t
 struct inode_data
 {
     int id;
-    Repeater *reperater;
+    Repeater *repeater;
 };
 
 Repeater *kobj2repeater(struct kobject *x)
@@ -97,6 +96,9 @@ struct file_operations repeater_fops = {
     .write = repeater_device_write,
     .release = repeater_device_release};
 
+/////////////////////////////////////////////
+/// Object Manipulation
+/////////////////////////////////////////////
 int repeater_get_pid(Repeater *repeater)
 {
     return repeater->pid;
@@ -107,26 +109,55 @@ char *repeater_get_name(Repeater *repeater)
     return repeater->name;
 }
 
+int get_dev_minor(Repeater *repeater)
+{
+    return MINOR(repeater->dev);
+}
+
+static void repeater_destroy(Repeater *repeater)
+{
+    if (repeater->device)
+    {
+        device_destroy(repeater->device->class, repeater->dev);
+    }
+    if (repeater->cdev_added)
+    {
+        cdev_del(&repeater->cdev);
+    }
+    if (repeater->command_buffer != NULL)
+    {
+        destroy_command_buffer(repeater->command_buffer);
+    }
+    kfree(repeater);
+}
+
 Repeater *repeater_create_and_add(struct kset *parent, const int pid, const char *name, dev_t dev, struct class *device_class, repeater_add_data_callback callback)
 {
     Repeater *repeater;
     int retval;
     int err;
     struct device *device = NULL;
+    CommandBuffer *command_buffer = NULL;
 
     repeater = kzalloc(sizeof(*repeater), GFP_KERNEL);
     if (!repeater)
     {
-        goto err_bf_kobj;
+        return NULL;
     }
+
+    command_buffer = create_command_buffer();
+    if (!command_buffer)
+    {
+        repeater_destroy(repeater);
+        return NULL;
+    }
+    repeater->command_buffer = command_buffer;
 
     repeater->kobj.kset = parent;
     repeater->pid = pid;
     repeater->dev = dev;
     repeater->callback = callback;
     strncpy(repeater->name, name, CREMONA_MAX_DEVICE_NAME_LEN);
-    spin_lock_init(&repeater->producer_lock);
-    spin_lock_init(&repeater->consumer_lock);
     spin_lock_init(&repeater->toot_count_lock);
 
     cdev_init(&repeater->cdev, &repeater_fops);
@@ -134,15 +165,16 @@ Repeater *repeater_create_and_add(struct kset *parent, const int pid, const char
     retval = cdev_add(&repeater->cdev, repeater->dev, 1);
     if (retval)
     {
-        goto err_af_kobj;
+        repeater_destroy(repeater);
+        return NULL;
     }
     repeater->cdev_added = true;
 
     device = device_create(device_class, NULL, dev, NULL, repeater->name);
     if (IS_ERR(device))
     {
-        err = PTR_ERR(device);
-        goto err_af_kobj;
+        repeater_destroy(repeater);
+        return NULL;
     }
     repeater->device = device;
 
@@ -160,11 +192,6 @@ Repeater *repeater_create_and_add(struct kset *parent, const int pid, const char
     kobject_uevent(&repeater->kobj, KOBJ_ADD);
 
     return repeater;
-
-err_af_kobj:
-    kobject_put(&repeater->kobj);
-err_bf_kobj:
-    return NULL;
 }
 
 void repeater_put(Repeater *repeater)
@@ -175,119 +202,9 @@ void repeater_put(Repeater *repeater)
     }
 }
 
-void repeater_add_data(Repeater *repeater, CREMONA_REPERTER_DATA_TYPE type, int id, const char *data, int data_len)
-{
-    spin_lock(&repeater->producer_lock);
-    int head = repeater->buffer_head;
-    int tail = READ_ONCE(repeater->buffer_tail);
-    int len = min(data_len, CIRCULAR_BUFFER_DATA_LEN);
-
-    if (CIRC_SPACE(head, tail, CIRCULAR_BUFFER_LEN) >= 1)
-    {
-        CicularBufferItem *item = &repeater->cicular_buffer[head];
-        item->type = type;
-        item->id = id;
-        if (data != NULL)
-        {
-            memcpy(&item->data, data, len);
-            item->data_len = len;
-        }
-        smp_store_release(&repeater->buffer_head, (head + 1) & (CIRCULAR_BUFFER_LEN - 1));
-    }
-
-    spin_unlock(&repeater->producer_lock);
-    if (type == CREMONA_REPERTER_DATA_TYPE_TOOT_SEND)
-    {
-        repeater->callback(repeater);
-    }
-}
-
-static ssize_t repeater_add_data_user(Repeater *repeater, CREMONA_REPERTER_DATA_TYPE type, int id, const char __user *buf, size_t count)
-{
-    spin_lock(&repeater->producer_lock);
-    int head = repeater->buffer_head;
-    int tail = READ_ONCE(repeater->buffer_tail);
-    int len = min(count, CIRCULAR_BUFFER_DATA_LEN);
-    int rc;
-
-    if (CIRC_SPACE(head, tail, CIRCULAR_BUFFER_LEN) >= 1)
-    {
-        CicularBufferItem *item = &repeater->cicular_buffer[head];
-        item->type = type;
-        item->id = id;
-        if (buf != NULL)
-        {
-            if (copy_from_user(&item->data, buf, len) != 0)
-            {
-                item->data_len = 0;
-                rc = -EFAULT;
-            }
-            else
-            {
-                item->data_len = len;
-                rc = len;
-            }
-        }
-        else
-        {
-            item->data_len = 0;
-            rc = 0;
-        }
-
-        smp_store_release(&repeater->buffer_head, (head + 1) & (CIRCULAR_BUFFER_LEN - 1));
-    }
-
-    spin_unlock(&repeater->producer_lock);
-    // if (rc >= 0 )
-    // {
-    //     repeater->callback(repeater);
-    // }
-
-    return rc;
-}
-
-int repeater_read_data(Repeater *repeater, buffer_reader reader, void *data)
-{
-    int rc;
-
-    spin_lock(&repeater->consumer_lock);
-    int head = smp_load_acquire(&repeater->buffer_head);
-    int tail = repeater->buffer_tail;
-    if (CIRC_CNT(head, tail, CIRCULAR_BUFFER_LEN) >= 1)
-    {
-        CicularBufferItem *item = &repeater->cicular_buffer[tail];
-        rc = reader(item, data);
-    }
-
-    spin_unlock(&repeater->consumer_lock);
-
-    return rc;
-}
-
-int repeater_pop_data(Repeater *repeater)
-{
-    spin_lock(&repeater->consumer_lock);
-    int head = smp_load_acquire(&repeater->buffer_head);
-    int tail = repeater->buffer_tail;
-
-    if (CIRC_CNT(head, tail, CIRCULAR_BUFFER_LEN) >= 1)
-    {
-        smp_store_release(&repeater->buffer_tail, (tail + 1) & (CIRCULAR_BUFFER_LEN - 1));
-    }
-
-    spin_unlock(&repeater->consumer_lock);
-
-    head = smp_load_acquire(&repeater->buffer_head);
-    tail = repeater->buffer_tail;
-
-    return CIRC_CNT(head, tail, CIRCULAR_BUFFER_LEN);
-}
-
-int get_dev_minor(Repeater *repeater)
-{
-    return MINOR(repeater->dev);
-}
-
+/////////////////////////////////////////////
+/// KObject Manipulation
+/////////////////////////////////////////////
 static ssize_t repeater_attr_store(struct kobject *kobj,
                                    struct attribute *attr,
                                    const char *buf, size_t len)
@@ -324,15 +241,7 @@ static void repeater_release(struct kobject *kobj)
     struct repeater_t *repeater;
 
     repeater = kobj2repeater(kobj);
-    if (repeater->device)
-    {
-        device_destroy(repeater->device->class, repeater->dev);
-    }
-    if (repeater->cdev_added)
-    {
-        cdev_del(&repeater->cdev);
-    }
-    kfree(repeater);
+    repeater_destroy(repeater);
 }
 
 /////////////////////////////////////////////
@@ -353,12 +262,11 @@ static ssize_t name_show(struct repeater_t *repeater, struct repeater_attribute 
 static ssize_t buffer_count_show(struct repeater_t *repeater, struct repeater_attribute *attr,
                                  char *buf)
 {
-    int cnt = CIRC_CNT(repeater->buffer_head, repeater->buffer_tail, CIRCULAR_BUFFER_LEN);
-    return sysfs_emit(buf, "%d\n", cnt);
+    return sysfs_emit(buf, "%d\n", command_buffer_get_count(repeater->command_buffer));
 }
 
 /////////////////////////////////////////////
-/// KObject Attribute
+/// Device Manipulation
 /////////////////////////////////////////////
 static int repeater_device_open(struct inode *inode, struct file *filep)
 {
@@ -377,23 +285,25 @@ static int repeater_device_open(struct inode *inode, struct file *filep)
         return -ENOMEM;
     }
     data->id = toot_id;
-    data->reperater = repeater_get(repeater);
+    data->repeater = repeater_get(repeater);
     filep->private_data = data;
-    repeater_add_data(repeater, CREMONA_REPERTER_DATA_TYPE_TOOT_CREATE, toot_id, NULL, 0);
+    command_buffer_create_toot(repeater->command_buffer, toot_id);
+    repeater->callback(repeater);
 
     return 0;
 }
 
 static int repeater_device_release(struct inode *inode, struct file *filep)
 {
-    printk(KERN_INFO "simple_char: %s", __FUNCTION__);
-
     struct inode_data *data;
+
     data = (struct inode_data *)filep->private_data;
-    repeater_add_data(data->reperater, CREMONA_REPERTER_DATA_TYPE_TOOT_SEND, data->id, NULL, 0);
-    repeater_put(data->reperater);
+    command_buffer_send_toot(data->repeater->command_buffer, data->id);
+    data->repeater->callback(data->repeater);
+    repeater_put(data->repeater);
     kfree(data);
     filep->private_data = NULL;
+
     return 0;
 }
 static ssize_t repeater_device_read(struct file *filep, char __user *buf, size_t count, loff_t *f_pos)
@@ -402,7 +312,45 @@ static ssize_t repeater_device_read(struct file *filep, char __user *buf, size_t
 }
 static ssize_t repeater_device_write(struct file *filep, const char __user *buf, size_t count, loff_t *f_pos)
 {
+
     struct inode_data *data;
+    ssize_t rc;
+
     data = (struct inode_data *)filep->private_data;
-    return repeater_add_data_user(data->reperater, CREMONA_REPERTER_DATA_TYPE_TOOT_ADD_STRING, data->id, buf, count);
+    rc = command_buffer_add_str_from_usr(data->repeater->command_buffer, data->id, buf, count);
+    data->repeater->callback(data->repeater);
+
+    return rc;
+}
+
+/////////////////////////////////////////////
+/// Netlink command handler
+/////////////////////////////////////////////
+int repeater_read_data(Repeater *repeater, buffer_reader reader, void *context)
+{
+    return command_buffer_read_data(repeater->command_buffer, reader, context);
+}
+
+int repeater_pop_data(Repeater *repeater)
+{
+    return command_buffer_pop_data(repeater->command_buffer);
+}
+
+/////////////////////////////////////////////
+/// Timer Manipulation
+/////////////////////////////////////////////
+int repeater_add_keep_alive(Repeater *repeater)
+{
+    int retval;
+    retval = command_buffer_add_keep_alive(repeater->command_buffer);
+    if (retval < 0)
+    {
+        return -1;
+    }
+    else if (retval > 0)
+    {
+        repeater->callback(repeater);
+    }
+
+    return 0;
 }

@@ -1,9 +1,0 @@
-{
-    "files.associations": {
-        "init.h": "c",
-        "build_bug.h": "c",
-        "compiler.h": "c",
-        "module.h": "c",
-        "cremona.h": "c"
-    }
-}

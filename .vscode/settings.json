@@ -1,6 +1,8 @@
 {
     "cmake.sourceDirectory": "/workspaces/cremona-v2",
     "files.associations": {
-        "cdev.h": "c"
+        "cdev.h": "c",
+        "fs.h": "c",
+        "timer.h": "c"
     }
 }

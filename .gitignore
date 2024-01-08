@@ -1,3 +1,12 @@
-dest/
-driver/build/
-driver_test/driver_test
+# destinations
+/module/*.o
+/module/*.cmd
+/module/*.ko
+/module/*.mod
+/module/modules.order
+/module/Module.symvers
+
+/userland/cmd/cremona_daemon/cremona_daemon
+/userland/cmd/driver_test/driver_test
+
+/dest
