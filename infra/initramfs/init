@@ -17,6 +17,6 @@ cat /sys/kernel/cremona/status
 
 sleep 1
 
-#/cremona_daemon &
+/cremona_daemon &
 
 /bin/ash

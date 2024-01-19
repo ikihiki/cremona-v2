@@ -8,7 +8,7 @@ RUN cd /build/linux && make scripts_gdb
 FROM kernel as cremona
 RUN mkdir /build/cremona
 COPY module/ /build/cremona
-RUN cd /build/cremona && make
+RUN cd /build/cremona && KDIR=/build/linux make
 
 FROM ubuntu AS busybox
 RUN apt-get update && apt install -y build-essential bc bison flex libelf-dev libssl-dev libncurses5-dev git
@@ -34,8 +34,8 @@ COPY infra/initramfs/cremona.json /initramfs/
 
 FROM initramfs AS build_initramfs
 COPY --from=cremona  /build/cremona/cremona.ko /initramfs/
-COPY --from=userland /build/userland/cmd/cremona_daemon/cremona_daemon /initramfs/
-COPY --from=userland /build/userland/cmd/driver_test /initramfs/
+COPY --from=userland /build/cmd/cremona_daemon/cremona_daemon /initramfs/
+COPY --from=userland /build/cmd/driver_test /initramfs/
 RUN ( cd /initramfs ; find . -print0 | cpio -o -a0v -H newc ) | gzip > /initramfs.gz
 
 FROM ubuntu AS qemu
@@ -47,7 +47,7 @@ CMD [ "/run.sh" ]
 COPY --from=kernel /build/linux/ /build/linux/
 COPY --from=cremona /build/cremona/ /build/cremona/
 COPY --from=kernel /build/linux/arch/x86/boot/bzImage /dest
-COPY --from=initramfs /initramfs.gz /dest
+COPY --from=build_initramfs /initramfs.gz /dest
 
 
 FROM kernel AS devcontainer
