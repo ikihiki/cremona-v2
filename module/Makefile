@@ -8,9 +8,7 @@
 obj-m := cremona.o
 cremona-objs := main.o cremona_main.o repeater.o netlink.o command_buffer.o
 
-ifneq ($(KERNELRELEASE),)
 KVER ?= $(shell uname -r)
-endif
 KDIR ?= /usr/lib/modules/$(KVER)/build
 
 default:
